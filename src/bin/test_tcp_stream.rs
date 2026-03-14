@@ -112,6 +112,37 @@ fn main() {
 	}
 	println!("HELLOO message from SERVER: {}", decrypted);
 
+	let mut header_buffer = [0_u8; 12];
+	header_buffer[2..8].copy_from_slice(b"AUTHIN");
+	let mut data = String::from("root rOot");
+	let data_bytes = data.as_bytes();
+	let encrypted_data = server_pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, data_bytes)
+        .expect("Failed to encrypt message!");
+	let length = (encrypted_data.len() as u32).to_be_bytes();
+	header_buffer[8..12].copy_from_slice(&length);
+	stream.write_all(&header_buffer).expect("Failed to send AUTHIN header!");
+	stream.write_all(&encrypted_data).expect("Failed to send AUTHIN data!");
+
+	let mut header_buffer = [0_u8; 12];
+	stream.read(&mut header_buffer).expect("Failed to read AUTHIN answer header!");
+	let is_authorized = match str::from_utf8(&header_buffer[2..8]).unwrap() {
+		"AUTHOK" => {
+			true
+		},
+		"AUTHER" => {
+			false
+		},
+		_ => { 
+			panic!("Wrong answer from SERVER when trying to get result of auth!"); 
+		}
+	};
+	if is_authorized {
+		println!("Auth SUCCESS!");
+	} else {
+		println!("Auth FAILED!");
+	}
+
+
 	let abort_buffer = b"\0\0ABORTT\0\0\0\0";
 	stream.write_all(abort_buffer).expect("Failed to send ABORTT command!");
 
