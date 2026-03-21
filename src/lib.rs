@@ -5,7 +5,7 @@ use std::process;
 use ini::Ini;
 
 use rand::rngs::OsRng;
-use rsa::pkcs1::{DecodeRsaPrivateKey,EncodeRsaPrivateKey};
+use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 
 pub const CLI_VERSION: &str = "v0.1.0";
@@ -23,14 +23,23 @@ pub enum Command {
     Echooo(String),
     Disconnect(),
     Connect(),
+    RSAInit(),
     Quit()
+}
+
+#[derive(Debug)]
+pub struct Keypair {
+    pub pub_key: RsaPublicKey,
+    pub priv_key: RsaPrivateKey
 }
 
 #[derive(Debug)]
 pub struct NetworkClient {
     pub public_address: String,
     pub public_port: u16,
-    pub stream: Option<TcpStream>
+    pub stream: Option<TcpStream>,
+    pub client_keypair: Keypair,
+    pub server_pub_key: Option<RsaPublicKey>
 }
 
 impl TryInto<String> for Command {
@@ -51,6 +60,9 @@ impl TryInto<String> for Command {
             },
             Command::Quit() => {
                 Ok(format!("quit"))
+            },
+            Command::RSAInit() => {
+                Ok(format!("rsa_init"))
             }
         }
    }
@@ -80,6 +92,9 @@ pub fn input_handler(tx: Sender<Command>) {
             },
             "quit" => {
                 tx.send(Command::Quit()).expect("Failed to send control command from input thread!");
+            },
+            "rsa_init" => {
+                tx.send(Command::RSAInit()).expect("Failed to send control command from input thread!");
             },
             _ => {
                 println!("incorrect command.")
@@ -156,6 +171,78 @@ pub fn command_handler(command: Command, config: &Config, client: &mut NetworkCl
         },
         Command::Quit() => {
             process::exit(0);
+        },
+        Command::RSAInit() => {
+            if let None = &client.stream {
+                println!("No connection established. Use `connect`.");
+                return;
+            }
+            let stream = client.stream.as_mut().unwrap();
+            print!("Sending a RSA public key ... ");
+            let public_key_string = client.client_keypair.pub_key.to_pkcs1_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+            let public_key_raw = public_key_string.as_bytes();
+            let length = (public_key_raw.len() as u32).to_be_bytes();
+            let mut header_buffer = [0_u8; 12];
+            header_buffer[2..8].copy_from_slice(b"PUBKEY");
+            header_buffer[8..12].copy_from_slice(&length);
+            stream.write_all(&header_buffer).expect("Failed to send PUBKEY header!");
+            stream.write_all(public_key_raw).expect("Failed to send PUBKEY data!");
+            println!("ok!");
+
+            print!("Requesting a RSA public key ... ");
+            let mut header_buffer = [0_u8; 12];
+            header_buffer[2..8].copy_from_slice(b"PUBSRV");
+            stream.write_all(&header_buffer).expect("Failed to send PUBSRV command!");
+
+            let mut header_buffer = [0_u8; 12];
+            stream.read(&mut header_buffer).expect("Failed to read header after requesting server's pubkey!");
+            let mut raw_length = vec![0_u8; 4];
+            raw_length[..].copy_from_slice(&header_buffer[8..12]);
+            let length = u32::from_be_bytes(raw_length.as_array().unwrap().to_owned());
+            let mut data_buffer = vec![0_u8; length.try_into().unwrap()];
+            stream.read(&mut data_buffer).expect("Failed to read data section!");
+            client.server_pub_key = Some(RsaPublicKey::from_pkcs1_pem(str::from_utf8(&data_buffer).unwrap()).unwrap());
+            println!("ok!");
+
+            println!("Checking RSA encryption ... ");
+            print!("Sending hello ... ");
+            let mut header_buffer = [0_u8; 12];
+            header_buffer[2..8].copy_from_slice(b"HELLOO");
+            let data = String::from("I'm client!");
+            let data = data.as_bytes();
+            let mut rng = OsRng;
+            let data = client.server_pub_key.as_ref().unwrap().encrypt(&mut rng, Pkcs1v15Encrypt, data)
+                .expect("Failed to encrypt message!");
+            let length = data.len() as u32;
+            let length_raw = length.to_be_bytes();
+            header_buffer[8..12].copy_from_slice(&length_raw);
+            stream.write_all(&header_buffer).expect("Failed to send HELLOO!");
+            stream.write_all(&data).expect("Failed to send HELLOO data!");
+            println!("ok!");
+
+            print!("Waiting answer ... ");
+            let mut header_buffer = [0_u8; 12];
+            stream.read(&mut header_buffer).expect("Failed to read HELLOO answer header!");
+            if !(&header_buffer[2..8] == b"HELLOO") {
+                println!("fail!\nError! Server sent not HELLOO answer ({})", str::from_utf8(&header_buffer[2..8]).unwrap());
+                return;
+            }
+            let mut raw_length = vec![0_u8; 4];
+            raw_length[..].copy_from_slice(&header_buffer[8..12]);
+            let length = u32::from_be_bytes(raw_length.as_array().unwrap().to_owned());
+            let mut data_buffer = vec![0_u8; length.try_into().unwrap()];
+            stream.read(&mut data_buffer).expect("Failed to read HELLOO data section!");
+            println!("ok!");
+
+            print!("Decrypting answer ... ");
+            let decrypted = client.client_keypair.priv_key.decrypt(Pkcs1v15Encrypt, &data_buffer)
+                .expect("Failed to decrypt message!");	
+            let decrypted = str::from_utf8(&decrypted).unwrap();
+            if !(decrypted == "I'm server!") {
+                println!("fail! Server sent not correct HELLOO answer data! ({})", decrypted);
+                return;
+            }
+            println!("ok!");
         }
     }
 }

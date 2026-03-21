@@ -17,7 +17,9 @@ fn main() {
     let mut client = NetworkClient {
         public_address: String::from("0.0.0.0"),
         public_port: 0,
-        stream: None
+        stream: None,
+        client_keypair: Keypair { pub_key, priv_key },
+        server_pub_key: None
     };
 
     let (tx, rx) = mpsc::channel();
