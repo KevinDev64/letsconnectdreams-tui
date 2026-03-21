@@ -3,6 +3,72 @@ use std::net::TcpStream;
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey, EncodeRsaPublicKey};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use rand::rngs::OsRng;
+use rand::Rng;
+
+use std::net::{Ipv4Addr, UdpSocket};
+use ipnetwork::{IpNetwork, Ipv4Network};
+
+const STUN_BINDING_REQUEST: u16 = 0x0001;
+const STUN_MAGIC_COOKIE: u32 = 0x2112A442;
+const STUN_SERVER: &str = "stun.nextcloud.com:443";
+
+
+fn parse_stun_response(buf: &[u8]) -> Result<(IpNetwork, u16), Box<dyn std::error::Error>> {
+    let mut i = 20; 
+    let mut ip = [0_u8; 4];
+    let mut port: u16 = 0;
+
+    while i < buf.len() {
+        let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
+        let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
+        i += 4;
+
+        // XOR-MAPPED-ADDRESS
+        if attr_type == 0x0020 {
+            let family = buf[i + 1];
+            port = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) ^ ((STUN_MAGIC_COOKIE >> 16) as u16);
+            if family == 0x01 {
+                for j in 0..4 {
+                    ip[j] = buf[i + 4 + j] ^ (STUN_MAGIC_COOKIE.to_be_bytes()[j]);
+                }
+            }
+        }
+
+        i += attr_len;
+        if attr_len % 4 != 0 {
+            i += 4 - (attr_len % 4);
+        }
+    }
+
+    return Ok((IpNetwork::V4(
+                Ipv4Network::new(
+                    Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), 
+                    0_u8)
+                .unwrap()), 
+                port))
+
+}
+
+fn get_address_from_stun() -> Result<(IpNetwork, u16), Box<dyn std::error::Error>> {
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    socket.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
+    let mut buf = [0u8; 20];
+
+    buf[0..2].copy_from_slice(&STUN_BINDING_REQUEST.to_be_bytes());
+    buf[2..4].copy_from_slice(&0u16.to_be_bytes());
+    buf[4..8].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+
+    let mut rng = rand::thread_rng();
+    for i in 8..20 {
+        buf[i] = rng.r#gen();
+    }
+
+    socket.send_to(&buf, STUN_SERVER)?;
+    let mut response = [0u8; 1024];
+    let (size, _) = socket.recv_from(&mut response)?;
+
+    parse_stun_response(&response[..size])
+}
 
 fn main() {
 	let mut stream = TcpStream::connect("127.0.0.1:4222")
@@ -114,7 +180,7 @@ fn main() {
 
 	let mut header_buffer = [0_u8; 12];
 	header_buffer[2..8].copy_from_slice(b"AUTHIN");
-	let mut data = String::from("root rOot");
+	let data = String::from("root root");
 	let data_bytes = data.as_bytes();
 	let encrypted_data = server_pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, data_bytes)
         .expect("Failed to encrypt message!");
@@ -142,9 +208,46 @@ fn main() {
 		println!("Auth FAILED!");
 	}
 
+	let mut header_buffer = [0_u8; 12];
+	header_buffer[2..8].copy_from_slice(b"UPDADR");
+	let data = String::from("0.0.0.0/0 1234");
+	let data_bytes = data.as_bytes();
+	let encrypted_data = server_pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, data_bytes)
+        .expect("Failed to encrypt message!");
+	let length = (encrypted_data.len() as u32).to_be_bytes();
+	header_buffer[8..12].copy_from_slice(&length);
+	stream.write_all(&header_buffer).expect("Failed to send UPDADR header!");
+	stream.write_all(&encrypted_data).expect("Failed to send UPDADR data!");
 
 	let abort_buffer = b"\0\0ABORTT\0\0\0\0";
 	stream.write_all(abort_buffer).expect("Failed to send ABORTT command!");
 
 	stream.shutdown(std::net::Shutdown::Both).expect("Failed to close stream!");
+
+	let mut stream = TcpStream::connect("127.0.0.1:4222")
+			.expect("Failed to connect!");
+	let mut header_buffer = [0_u8; 12];
+	header_buffer[2..8].copy_from_slice(b"UPDADR");
+	let data = String::from("1.1.1.1/0 5555");
+	let data_bytes = data.as_bytes();
+	let encrypted_data = server_pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, data_bytes)
+        .expect("Failed to encrypt message!");
+	let length = (encrypted_data.len() as u32).to_be_bytes();
+	header_buffer[8..12].copy_from_slice(&length);
+	stream.write_all(&header_buffer).expect("Failed to send UPDADR header!");
+	stream.write_all(&encrypted_data).expect("Failed to send UPDADR data!");
+
+	let mut header_buffer = [0_u8; 12];
+	stream.read(&mut header_buffer).expect("Failed to read UPDADR (must be failed) answer!");
+	if &header_buffer[2..8] == b"FORBID" {
+		println!("FORBID test -> success!");
+	} else {
+		panic!("Expected FORBID, but I got {}", str::from_utf8(&header_buffer[2..8]).unwrap())
+	}
+
+	let abort_buffer = b"\0\0ABORTT\0\0\0\0";
+	stream.write_all(abort_buffer).expect("Failed to send ABORTT command!");
+
+	stream.shutdown(std::net::Shutdown::Both).expect("Failed to close stream!");
+	
 }
