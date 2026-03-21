@@ -7,8 +7,8 @@ use rand::rngs::OsRng;
 use rsa::pkcs1::{DecodeRsaPrivateKey,EncodeRsaPrivateKey, Version};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 
-const CLI_VERSION: &str = "v0.1.0";
-const PROTOCOL_VERSION: &str = "v0.1.0";
+pub const CLI_VERSION: &str = "v0.1.0";
+pub const PROTOCOL_VERSION: &str = "v0.1.0";
 
 #[derive(Debug, Clone)]
 pub enum Command {

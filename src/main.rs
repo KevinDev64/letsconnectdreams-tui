@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, TryRecvError};
 use letsconnectdreams_tui::*;
 
 fn main() {
-    println!("letsconnectdreams CLI v.0.1");
+    println!("letsconnectdreams CLI {}", CLI_VERSION);
     println!("RSA keypair initialization...");
     let (priv_key, pub_key) = get_rsa_keypair();
 
