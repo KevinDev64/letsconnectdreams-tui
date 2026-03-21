@@ -1,11 +1,11 @@
 use std::net::TcpStream;
 use std::sync::mpsc::Sender;
 use std::io::{self, Read, Write};
-use std::fmt;
+use std::process;
 use ini::Ini;
 
 use rand::rngs::OsRng;
-use rsa::pkcs1::{DecodeRsaPrivateKey,EncodeRsaPrivateKey, Version};
+use rsa::pkcs1::{DecodeRsaPrivateKey,EncodeRsaPrivateKey};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 
 pub const CLI_VERSION: &str = "v0.1.0";
@@ -22,7 +22,8 @@ pub enum Command {
     Version(),
     Echooo(String),
     Disconnect(),
-    Connect()
+    Connect(),
+    Quit()
 }
 
 #[derive(Debug)]
@@ -47,6 +48,9 @@ impl TryInto<String> for Command {
             },
             Command::Connect() => {
                 Ok(format!("connect"))
+            },
+            Command::Quit() => {
+                Ok(format!("quit"))
             }
         }
    }
@@ -74,6 +78,9 @@ pub fn input_handler(tx: Sender<Command>) {
             "connect" => {
                 tx.send(Command::Connect()).expect("Failed to send control command from input thread!")
             },
+            "quit" => {
+                tx.send(Command::Quit()).expect("Failed to send control command from input thread!");
+            },
             _ => {
                 println!("incorrect command.")
             }
@@ -81,9 +88,6 @@ pub fn input_handler(tx: Sender<Command>) {
     }
 }
 
-pub fn check_auth(tx: Sender<Command>, user_input: &str, ) {
-    
-}
 
 pub fn command_handler(command: Command, config: &Config, client: &mut NetworkClient) {
     match command {
@@ -124,7 +128,7 @@ pub fn command_handler(command: Command, config: &Config, client: &mut NetworkCl
         },
         Command::Disconnect() => {
             if let None = &client.stream {
-                println!("No connection established! Use `connect`.");
+                println!("No connection established. Use `connect`.");
                 return;
             }
             let stream = client.stream.as_mut().unwrap();
@@ -132,7 +136,7 @@ pub fn command_handler(command: Command, config: &Config, client: &mut NetworkCl
             stream.write_all(header_buffer).expect("Failed to send ABORTT command");
             stream.shutdown(std::net::Shutdown::Both).expect("Failed to shutdown TCP connection!");
             client.stream = None;
-            println!("Disconnected from Signaling Server!");
+            println!("Disconnected.");
         },
         Command::Connect() => {
             if let Some(_n) = &client.stream {
@@ -141,7 +145,7 @@ pub fn command_handler(command: Command, config: &Config, client: &mut NetworkCl
             }
             client.stream = match TcpStream::connect(format!("{}:{}", config.host, config.port)) {
                 Ok(n) => {
-                    println!("Connected!");
+                    println!("Connected.");
                     Some(n)
                 },
                 Err(e) => {
@@ -149,6 +153,9 @@ pub fn command_handler(command: Command, config: &Config, client: &mut NetworkCl
                     None
                 }                
             };
+        },
+        Command::Quit() => {
+            process::exit(0);
         }
     }
 }
