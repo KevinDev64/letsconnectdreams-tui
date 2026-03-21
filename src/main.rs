@@ -7,13 +7,18 @@ use letsconnectdreams_tui::*;
 
 fn main() {
     println!("letsconnectdreams CLI {}", CLI_VERSION);
-    println!("RSA keypair initialization...");
+    println!("RSA keypair initialization ...");
     let (priv_key, pub_key) = get_rsa_keypair();
 
-    println!("Connecting to Signaling Server...");
-    println!("Selected default server!");
-    let mut stream = TcpStream::connect("127.0.0.1:4222")
-			.expect("Failed to connect. Change your settings!");
+    println!("Loading config.ini ...");
+    let config = load_config();
+
+    println!("NetworkClient initialization ...");
+    let mut client = NetworkClient {
+        public_address: String::from("0.0.0.0"),
+        public_port: 0,
+        stream: None
+    };
 
     let (tx, rx) = mpsc::channel();
     let input_thread_handler = thread::spawn(move || {
@@ -23,7 +28,7 @@ fn main() {
     loop {
         match rx.try_recv() {
             Ok(command) => {
-                command_handler(command, &mut stream);
+                command_handler(command, &config, &mut client);
             },
             Err(TryRecvError::Empty) => {},
             Err(TryRecvError::Disconnected) => {

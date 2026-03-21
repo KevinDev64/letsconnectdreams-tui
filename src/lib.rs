@@ -2,6 +2,7 @@ use std::net::TcpStream;
 use std::sync::mpsc::Sender;
 use std::io::{self, Read, Write};
 use std::fmt;
+use ini::Ini;
 
 use rand::rngs::OsRng;
 use rsa::pkcs1::{DecodeRsaPrivateKey,EncodeRsaPrivateKey, Version};
@@ -11,10 +12,24 @@ pub const CLI_VERSION: &str = "v0.1.0";
 pub const PROTOCOL_VERSION: &str = "v0.1.0";
 
 #[derive(Debug, Clone)]
+pub struct Config {
+    pub host: String,
+    pub port: u16
+}
+
+#[derive(Debug, Clone)]
 pub enum Command {
     Version(),
     Echooo(String),
+    Disconnect(),
+    Connect()
+}
 
+#[derive(Debug)]
+pub struct NetworkClient {
+    pub public_address: String,
+    pub public_port: u16,
+    pub stream: Option<TcpStream>
 }
 
 impl TryInto<String> for Command {
@@ -26,6 +41,12 @@ impl TryInto<String> for Command {
             },
             Command::Echooo(n) => {
                 Ok(format!("echooo {}", n))
+            },
+            Command::Disconnect() => {
+                Ok(format!("disconnect"))
+            },
+            Command::Connect() => {
+                Ok(format!("connect"))
             }
         }
    }
@@ -47,6 +68,12 @@ pub fn input_handler(tx: Sender<Command>) {
             "echooo" => {
                 tx.send(Command::Echooo(user_input.get(1).unwrap().to_string())).expect("Failed to send control command from input thread!");
             },
+            "disconnect" => {
+                tx.send(Command::Disconnect()).expect("Failed to send control command from input thread!");
+            },
+            "connect" => {
+                tx.send(Command::Connect()).expect("Failed to send control command from input thread!")
+            },
             _ => {
                 println!("incorrect command.")
             }
@@ -54,7 +81,11 @@ pub fn input_handler(tx: Sender<Command>) {
     }
 }
 
-pub fn command_handler(command: Command, stream: &mut TcpStream) {
+pub fn check_auth(tx: Sender<Command>, user_input: &str, ) {
+    
+}
+
+pub fn command_handler(command: Command, config: &Config, client: &mut NetworkClient) {
     match command {
         Command::Version() => {
             println!("\n+++++++++++++++++++++++++++++");
@@ -64,6 +95,11 @@ pub fn command_handler(command: Command, stream: &mut TcpStream) {
             println!("+++++++++++++++++++++++++++++\n")
         },
         Command::Echooo(n) => {
+            if let None = &client.stream {
+                println!("No connection established! Use `connect`.");
+                return;
+            }
+            let stream = client.stream.as_mut().unwrap();
             let mut header_buffer = [0_u8; 12];
             header_buffer[2..8].copy_from_slice(b"ECHOOO");
             let data = n.as_bytes();
@@ -85,6 +121,34 @@ pub fn command_handler(command: Command, stream: &mut TcpStream) {
             } else {
                 println!("ECHOOO test -> fail.");
             }
+        },
+        Command::Disconnect() => {
+            if let None = &client.stream {
+                println!("No connection established! Use `connect`.");
+                return;
+            }
+            let stream = client.stream.as_mut().unwrap();
+            let header_buffer = b"\0\0ABORTT\0\0\0\0";
+            stream.write_all(header_buffer).expect("Failed to send ABORTT command");
+            stream.shutdown(std::net::Shutdown::Both).expect("Failed to shutdown TCP connection!");
+            client.stream = None;
+            println!("Disconnected from Signaling Server!");
+        },
+        Command::Connect() => {
+            if let Some(_n) = &client.stream {
+                println!("You are already connected!");
+                return;
+            }
+            client.stream = match TcpStream::connect(format!("{}:{}", config.host, config.port)) {
+                Ok(n) => {
+                    println!("Connected!");
+                    Some(n)
+                },
+                Err(e) => {
+                    println!("Failed to connect! ({})", e);
+                    None
+                }                
+            };
         }
     }
 }
@@ -124,6 +188,27 @@ pub fn get_rsa_keypair() -> (RsaPrivateKey, RsaPublicKey) {
     };
     let pub_key = priv_key.to_public_key();
     (priv_key, pub_key)
+}
+
+pub fn load_config() -> Config {
+    match Ini::load_from_file("config.ini") {
+        Ok(n) => {
+            let server_props = n.section(Some("server")).expect("Bad config! Delete it and restart program.");
+            let host = server_props.get("host").expect("Bad config! Delete it and restart program.");
+            let port = server_props.get("port").expect("Bad config! Delete it and restart program.");
+            let port: u16 = port.parse().expect("Bad config! Delete it and restart program.");
+            Config { host: host.to_string(), port }
+        },
+        Err(e) => {
+            println!("Failed to load config! Trying to create...");
+            let mut conf = Ini::new();
+            conf.with_section(Some("server"))
+                .set("host", "127.0.0.1")
+                .set("port", "4222");
+            conf.write_to_file("config.ini").expect("Failed to write generated config!");
+            Config { host: "127.0.0.1".to_string(), port: 4222 }
+        }
+    }
 }
 
 #[cfg(test)]
