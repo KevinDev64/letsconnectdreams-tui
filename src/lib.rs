@@ -24,6 +24,7 @@ pub enum Command {
     Disconnect(),
     Connect(),
     RSAInit(),
+    Login((String, String)),
     Quit()
 }
 
@@ -39,11 +40,11 @@ pub struct NetworkClient {
     pub public_port: u16,
     pub stream: Option<TcpStream>,
     pub client_keypair: Keypair,
-    pub server_pub_key: Option<RsaPublicKey>
+    pub server_pub_key: Option<RsaPublicKey>,
 }
 
 impl TryInto<String> for Command {
-    type Error = ();
+    type Error = &'static str;
    fn try_into(self) -> Result<String, Self::Error> {
        match self {
             Command::Version() => {
@@ -63,6 +64,12 @@ impl TryInto<String> for Command {
             },
             Command::RSAInit() => {
                 Ok(format!("rsa_init"))
+            },
+            Command::Login(_) => {
+                Ok(format!("login"))
+            },
+            _ => {
+                Err("Unknown message type!")
             }
         }
    }
@@ -95,6 +102,14 @@ pub fn input_handler(tx: Sender<Command>) {
             },
             "rsa_init" => {
                 tx.send(Command::RSAInit()).expect("Failed to send control command from input thread!");
+            },
+            "login" => {
+                if user_input.len() != 3 {
+                    println!("wrong syntax.");
+                } else {
+                    let auth_data = (user_input.get(1).unwrap().to_string(), user_input.get(2).unwrap().to_string());
+                    tx.send(Command::Login(auth_data)).expect("Failed to send control command from input thread!");
+                }
             },
             _ => {
                 println!("incorrect command.")
@@ -151,6 +166,7 @@ pub fn command_handler(command: Command, config: &Config, client: &mut NetworkCl
             stream.write_all(header_buffer).expect("Failed to send ABORTT command");
             stream.shutdown(std::net::Shutdown::Both).expect("Failed to shutdown TCP connection!");
             client.stream = None;
+            client.server_pub_key = None;
             println!("Disconnected.");
         },
         Command::Connect() => {
@@ -239,10 +255,48 @@ pub fn command_handler(command: Command, config: &Config, client: &mut NetworkCl
                 .expect("Failed to decrypt message!");	
             let decrypted = str::from_utf8(&decrypted).unwrap();
             if !(decrypted == "I'm server!") {
-                println!("fail! Server sent not correct HELLOO answer data! ({})", decrypted);
+                println!("fail! Server sent incorrect HELLOO answer data! ({})", decrypted);
                 return;
             }
             println!("ok!");
+        },
+        Command::Login(auth_data) => {
+            if let None = &client.stream {
+                println!("No connection established. Use `connect`.");
+                return;
+            }
+            if let None = &client.server_pub_key {
+                println!("No server RSA public key initialized! Try use `rsa_init` before logging in.");
+                return;
+            }
+            let stream = client.stream.as_mut().unwrap();
+            print!("Logging in ... ");
+            let mut rng = OsRng;
+            let mut header_buffer = [0_u8; 12];
+            header_buffer[2..8].copy_from_slice(b"AUTHIN");
+            let data = format!("{} {}", auth_data.0, auth_data.1);
+            let data_bytes = data.as_bytes();
+            let encrypted_data = client.server_pub_key.as_ref().unwrap().encrypt(&mut rng, Pkcs1v15Encrypt, data_bytes)
+                .expect("Failed to encrypt message!");
+            let length = (encrypted_data.len() as u32).to_be_bytes();
+            header_buffer[8..12].copy_from_slice(&length);
+            stream.write_all(&header_buffer).expect("Failed to send AUTHIN header!");
+            stream.write_all(&encrypted_data).expect("Failed to send AUTHIN data!");
+
+            let mut header_buffer = [0_u8; 12];
+            stream.read(&mut header_buffer).expect("Failed to read AUTHIN answer header!");
+            match str::from_utf8(&header_buffer[2..8]).unwrap() {
+                "AUTHOK" => {
+                    println!("ok!");
+                },
+                "AUTHER" => {
+                    println!("fail! Try again.");
+                },
+                _ => { 
+                    println!("fail!");
+                    panic!("Server sent incorrect AUTHOK/AUTHER answer!");
+                }
+            }
         }
     }
 }
