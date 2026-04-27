@@ -1,3 +1,5 @@
 /target
 config.ini
 priv_key.pem
+
+.DS_Store
